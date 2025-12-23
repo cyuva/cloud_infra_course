@@ -160,18 +160,17 @@ static void try_enable_memory_controller(void)
 static void setup_cgroup(pid_t child_pid)
 {
 	const char *cg_dir_name = "/sys/fs/cgroup/simple_container";
-	char cg_dir[PATH_MAX];
 	char path[PATH_MAX];
 	char pidbuf[64];
 
 	try_enable_memory_controller();
 
 	/* Create the cgroup directory */
-	if (mkdir(cg_dir, 0755) < 0 && errno != EEXIST)
+	if (mkdir(cg_dir_name, 0755) < 0 && errno != EEXIST)
 		die("mkdir(cgroup)");
 
 	/* resolve the path of memory.max*/
-	if (snprintf(path, sizeof(path), "%s/memory.max", cg_dir) >= (int)sizeof(path)) {
+	if (snprintf(path, sizeof(path), "%s/memory.max", cg_dir_name) >= (int)sizeof(path)) {
 		errno = ENAMETOOLONG;
 		die("snprintf(memory.max)");
 	}
@@ -179,7 +178,7 @@ static void setup_cgroup(pid_t child_pid)
 	write_file(path, "100000000\n");
 
 	/* resolve the path of cgroup.procs*/
-	if (snprintf(path, sizeof(path), "%s/cgroup.procs", cg_dir) >= (int)sizeof(path)) {
+	if (snprintf(path, sizeof(path), "%s/cgroup.procs", cg_dir_name) >= (int)sizeof(path)) {
 		errno = ENAMETOOLONG;
 		die("snprintf(cgroup.procs)");
 	}
