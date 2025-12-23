@@ -320,10 +320,6 @@ int main(int argc, char **argv)
 	if (close(pipefd[1]) < 0)
 		die("close pipe write end failed");
 
-	/* Phase 4: Resume the child process */
-	if (kill(pid, SIGCONT) < 0)
-		die("kill(SIGCONT) failed");
-
     /* parent process waits for child to finish */
 	if (waitpid(pid, NULL, 0) < 0)
 		die("waitpid failed");

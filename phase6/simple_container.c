@@ -15,6 +15,9 @@
 
 #include <fcntl.h>
 
+#include <cap-ng.h>
+
+#include <seccomp.h>
 
 static void die(const char *msg)
 {
@@ -84,7 +87,7 @@ static void setup_rootfs(const char *rootfs_path)
 		die("rmdir(/.old_root)");
 }
 
-/* Phase 3 */
+/* Phase 3 functions */
 
 /* Phase 3: Mount a fresh /proc inside the container root */
 static void mount_proc(void)
@@ -97,7 +100,7 @@ static void mount_proc(void)
 		die("mount(/proc)");
 }
 
-/* phase 4 funcs */
+/* phase 4 functions */
 
 /* phase 4: Write data to a file specified by path */
 static void write_file(const char *path, const char *data)
@@ -154,7 +157,7 @@ static void try_enable_memory_controller(void)
 }
 
 /* 
- *phase 4: setup cgroup for the child process to limit memory usage
+ * phase 4: setup cgroup for the child process to limit memory usage
  * set memory.max to 100MB and add child_pid to cgroup.procs
  */
 static void setup_cgroup(pid_t child_pid)
@@ -200,7 +203,42 @@ static void cleanup_cgroup(void)
 		die("rmdir(cgroup)");
 }
 
+/* Phase 5 functions */
 
+/*
+ * Phase 5: whitelist capabilities.
+ * Allowed: CAP_KILL, CAP_SETGID, CAP_SETUID, CAP_NET_BIND_SERVICE, CAP_SYS_CHROOT
+ */
+static void whitelist_capabilities(void)
+{
+	/* Clear all capabilities first */
+	capng_clear(CAPNG_SELECT_BOTH);
+
+	/* Add back only the whitelisted capabilities */
+	capng_update(CAPNG_ADD,
+		     CAPNG_EFFECTIVE | CAPNG_PERMITTED | CAPNG_BOUNDING_SET,
+		     CAP_KILL);
+
+	capng_update(CAPNG_ADD,
+		     CAPNG_EFFECTIVE | CAPNG_PERMITTED | CAPNG_BOUNDING_SET,
+		     CAP_SETGID);
+
+	capng_update(CAPNG_ADD,
+		     CAPNG_EFFECTIVE | CAPNG_PERMITTED | CAPNG_BOUNDING_SET,
+		     CAP_SETUID);
+
+	capng_update(CAPNG_ADD,
+		     CAPNG_EFFECTIVE | CAPNG_PERMITTED | CAPNG_BOUNDING_SET,
+		     CAP_NET_BIND_SERVICE);
+
+	capng_update(CAPNG_ADD,
+		     CAPNG_EFFECTIVE | CAPNG_PERMITTED | CAPNG_BOUNDING_SET,
+		     CAP_SYS_CHROOT);
+	
+	/* Apply the capability changes */
+	if (capng_apply(CAPNG_SELECT_BOTH) < 0)
+		die("capng_apply");
+}
 
 int main(int argc, char **argv)
 {
@@ -246,6 +284,9 @@ int main(int argc, char **argv)
 
 		/* Phase 3: mount a fresh /proc inside the container root */
 		mount_proc();
+
+		/* Phase 5: enforce whitelisted capabilities right before exec */
+		whitelist_capabilities();
         
 		/* 
 		 * Phase 4: wait for parent to setup cgroup
