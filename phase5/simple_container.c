@@ -15,6 +15,8 @@
 
 #include <fcntl.h>
 
+#include <cap-ng.h>
+
 
 static void die(const char *msg)
 {
