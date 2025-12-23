@@ -240,6 +240,37 @@ static void whitelist_capabilities(void)
 		die("capng_apply");
 }
 
+/* Phase 6 functions */
+
+/* Phase 6: Setup seccomp filter */
+static void install_seccomp(void)
+{
+	scmp_filter_ctx ctx;
+
+	ctx = seccomp_init(SCMP_ACT_ALLOW);
+	if (!ctx) {
+		errno = ENOMEM;
+		die("seccomp_init failed");
+	}
+
+	if (seccomp_rule_add(ctx, SCMP_ACT_ERRNO(EPERM), SCMP_SYS(reboot), 0) < 0)
+		die("seccomp_rule_add(reboot) failed");
+	if (seccomp_rule_add(ctx, SCMP_ACT_ERRNO(EPERM), SCMP_SYS(swapon), 0) < 0)
+		die("seccomp_rule_add(swapon) failed");
+	if (seccomp_rule_add(ctx, SCMP_ACT_ERRNO(EPERM), SCMP_SYS(swapoff), 0) < 0)
+		die("seccomp_rule_add(swapoff) failed");
+	if (seccomp_rule_add(ctx, SCMP_ACT_ERRNO(EPERM), SCMP_SYS(init_module), 0) < 0)
+		die("seccomp_rule_add(init_module) failed");
+	if (seccomp_rule_add(ctx, SCMP_ACT_ERRNO(EPERM), SCMP_SYS(finit_module), 0) < 0)
+		die("seccomp_rule_add(finit_module) failed");
+	if (seccomp_rule_add(ctx, SCMP_ACT_ERRNO(EPERM), SCMP_SYS(delete_module), 0) < 0)
+		die("seccomp_rule_add(delete_module) failed");
+	if (seccomp_load(ctx) < 0)
+		die("seccomp_load failed");
+
+	seccomp_release(ctx);
+}
+
 int main(int argc, char **argv)
 {
 	pid_t pid;
@@ -287,10 +318,13 @@ int main(int argc, char **argv)
 
 		/* Phase 5: enforce whitelisted capabilities right before exec */
 		whitelist_capabilities();
+
+		/* Phase 6: install seccomp filter */
+		install_seccomp();
         
 		/* 
 		 * Phase 4: wait for parent to setup cgroup
-		 * block in order to avoid race condition with set_cgroup
+		 * block child in order to avoid race condition with set_cgroup
 		 */
 		char c;
 		if (read(pipefd[0], &c, 1) < 0)

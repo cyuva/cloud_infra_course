@@ -289,7 +289,7 @@ int main(int argc, char **argv)
         
 		/* 
 		 * Phase 4: wait for parent to setup cgroup
-		 * block in order to avoid race condition with set_cgroup
+		 * block child in order to avoid race condition with set_cgroup
 		 */
 		char c;
 		if (read(pipefd[0], &c, 1) < 0)
