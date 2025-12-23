@@ -21,12 +21,16 @@ static void die(const char *msg)
 	exit(EXIT_FAILURE);
 }
 
+/* Phase 2 functions/
+
+/* Phase 2: wrraper for pivot_root syscall */
 static int pivot_root_wrapper(const char *new_root, const char *put_old)
 {
 	/* Wrapper for pivot_root syscall */
 	return syscall(SYS_pivot_root, new_root, put_old);
 }
 
+/* Phase 2: Setup rootfs using pivot_root */
 static void setup_rootfs(const char *rootfs_path)
 {
 	char new_root[PATH_MAX];

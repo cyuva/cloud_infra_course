@@ -42,6 +42,8 @@ int main(int argc, char **argv)
 		die("execv failed");
 	}
 
+	/* Parent Process */
+
     /* parent process waits for child to finish */
 	if (waitpid(pid, NULL, 0) < 0)
 		die("waitpid failed");
