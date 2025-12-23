@@ -78,6 +78,16 @@ static void setup_rootfs(const char *rootfs_path)
 		die("rmdir(/.old_root)");
 }
 
+static void mount_proc(void)
+{
+	/* Some rootfs may not have /proc; create it if missing. */
+	if (mkdir("/proc", 0555) < 0 && errno != EEXIST)
+		die("mkdir(/proc)");
+
+	if (mount("proc", "/proc", "proc", 0, NULL) < 0)
+		die("mount(/proc)");
+}
+
 int main(int argc, char **argv)
 {
 	pid_t pid;
@@ -88,13 +98,20 @@ int main(int argc, char **argv)
 		return EXIT_FAILURE;
 	}
 
+	 /*
+	 * Phase 3: PID namespaces only affect children.
+	 * Unshare in the parent before fork so the child becomes PID 1.
+	 */
+	if (unshare(CLONE_NEWPID) < 0)
+		die("unshare(CLONE_NEWPID)");
+
 	pid = fork();
 	if (pid < 0)
 		die("fork");
 
 	if (pid == 0) {
-		/* Phase 1: basic namespace isolation (UTS, Mount, IPC, PID) */
-		if (unshare(CLONE_NEWUTS | CLONE_NEWNS | CLONE_NEWIPC | CLONE_NEWPID) < 0)
+		/* Phase 1: basic namespace isolation (UTS, Mount, IPC) */
+		if (unshare(CLONE_NEWUTS | CLONE_NEWNS | CLONE_NEWIPC) < 0)
 			die("unshare failed");
 
         /* Phase 1: set hostname */
@@ -103,6 +120,9 @@ int main(int argc, char **argv)
         
 		/* Phase 2: filesystem isolation using pivot_root */
 		setup_rootfs(argv[1]);
+
+		/* Phase 3: mount a fresh /proc inside the container root */
+		mount_proc();
         
 		/* run the requested command */
 		execv(argv[2], &argv[2]);

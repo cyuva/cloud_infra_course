@@ -29,8 +29,8 @@ int main(int argc, char **argv)
 		die("fork");
 
 	if (pid == 0) {
-		/* Phase 1: basic namespace isolation (UTS, Mount, IPC) */
-		if (unshare(CLONE_NEWUTS | CLONE_NEWNS | CLONE_NEWIPC) < 0)
+		/* Phase 1: basic namespace isolation (UTS, Mount, IPC, PID) */
+		if (unshare(CLONE_NEWUTS | CLONE_NEWNS | CLONE_NEWIPC | CLONE_NEWPID) < 0)
 			die("unshare failed");
 
         /* Phase 1: set hostname */
