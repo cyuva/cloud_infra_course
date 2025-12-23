@@ -3,6 +3,7 @@
 #include <fcntl.h>
 #include <limits.h>
 #include <sched.h>
+#include <seccomp.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -188,6 +189,38 @@ static void drop_caps(void)
 		die("capng_apply");
 }
 
+/*
+ * Phase 6: Seccomp filter. Allow by default, block a few dangerous syscalls.
+ */
+static void install_seccomp(void)
+{
+	scmp_filter_ctx ctx;
+
+	ctx = seccomp_init(SCMP_ACT_ALLOW);
+	if (!ctx) {
+		errno = ENOMEM;
+		die("seccomp_init");
+	}
+
+	if (seccomp_rule_add(ctx, SCMP_ACT_ERRNO(EPERM), SCMP_SYS(reboot), 0) < 0)
+		die("seccomp_rule_add(reboot)");
+	if (seccomp_rule_add(ctx, SCMP_ACT_ERRNO(EPERM), SCMP_SYS(swapon), 0) < 0)
+		die("seccomp_rule_add(swapon)");
+	if (seccomp_rule_add(ctx, SCMP_ACT_ERRNO(EPERM), SCMP_SYS(swapoff), 0) < 0)
+		die("seccomp_rule_add(swapoff)");
+	if (seccomp_rule_add(ctx, SCMP_ACT_ERRNO(EPERM), SCMP_SYS(init_module), 0) < 0)
+		die("seccomp_rule_add(init_module)");
+	if (seccomp_rule_add(ctx, SCMP_ACT_ERRNO(EPERM), SCMP_SYS(finit_module), 0) < 0)
+		die("seccomp_rule_add(finit_module)");
+	if (seccomp_rule_add(ctx, SCMP_ACT_ERRNO(EPERM), SCMP_SYS(delete_module), 0) < 0)
+		die("seccomp_rule_add(delete_module)");
+
+	if (seccomp_load(ctx) < 0)
+		die("seccomp_load");
+
+	seccomp_release(ctx);
+}
+
 int main(int argc, char **argv)
 {
 	pid_t pid;
@@ -215,8 +248,8 @@ int main(int argc, char **argv)
 		setup_rootfs(argv[1]);
 		mount_proc();
 
-		/* Phase 5: drop capabilities right before exec */
 		drop_caps();
+		install_seccomp();
 
 		execv(argv[2], &argv[2]);
 		die("execv");
