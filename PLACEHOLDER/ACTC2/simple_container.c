@@ -12,6 +12,8 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#include <cap-ng.h>
+
 static void die(const char *msg)
 {
 	perror(msg);
@@ -90,33 +92,29 @@ static void mount_proc(void)
 }
 
 /*
- * Phase 4: Create a cgroup v2 and limit memory.
- * We intentionally do not fail if enabling the memory controller is not possible
- * (some setups already enable it or disallow writing subtree_control here).
+ * Phase 4: best-effort enabling of memory controller. Some systems already
+ * enable it or disallow writing subtree_control. Failure here is OK.
  */
 static void try_enable_memory_controller(void)
 {
 	const char *path = "/sys/fs/cgroup/cgroup.subtree_control";
+	int fd;
+	ssize_t wr;
 
 	if (access(path, F_OK) != 0)
 		return;
 
-	/* Use a small, warning-free write via write_file; ignore failure explicitly. */
-	{
-		int saved_errno;
-		int fd = open(path, O_WRONLY | O_CLOEXEC);
-		if (fd < 0)
-			return;
+	fd = open(path, O_WRONLY | O_CLOEXEC);
+	if (fd < 0)
+		return;
 
-		/* Must check return values under -Werror */
-		if (write(fd, "+memory\n", 8) < 0) {
-			/* ignore */
-		}
-		saved_errno = errno;
-		if (close(fd) < 0) {
-			/* ignore */
-		}
-		errno = saved_errno;
+	wr = write(fd, "+memory\n", 8);
+	if (wr < 0) {
+		/* ignore */
+	}
+
+	if (close(fd) < 0) {
+		/* ignore */
 	}
 }
 
@@ -162,6 +160,34 @@ static void cleanup_cgroup(void)
 		die("rmdir(cgroup)");
 }
 
+/*
+ * Phase 5: whitelist capabilities.
+ * Allowed: CAP_KILL, CAP_SETGID, CAP_SETUID, CAP_NET_BIND_SERVICE, CAP_SYS_CHROOT
+ */
+static void drop_caps(void)
+{
+	capng_clear(CAPNG_SELECT_BOTH);
+
+	capng_update(CAPNG_ADD,
+		     CAPNG_EFFECTIVE | CAPNG_PERMITTED | CAPNG_BOUNDING_SET,
+		     CAP_KILL);
+	capng_update(CAPNG_ADD,
+		     CAPNG_EFFECTIVE | CAPNG_PERMITTED | CAPNG_BOUNDING_SET,
+		     CAP_SETGID);
+	capng_update(CAPNG_ADD,
+		     CAPNG_EFFECTIVE | CAPNG_PERMITTED | CAPNG_BOUNDING_SET,
+		     CAP_SETUID);
+	capng_update(CAPNG_ADD,
+		     CAPNG_EFFECTIVE | CAPNG_PERMITTED | CAPNG_BOUNDING_SET,
+		     CAP_NET_BIND_SERVICE);
+	capng_update(CAPNG_ADD,
+		     CAPNG_EFFECTIVE | CAPNG_PERMITTED | CAPNG_BOUNDING_SET,
+		     CAP_SYS_CHROOT);
+
+	if (capng_apply(CAPNG_SELECT_BOTH) < 0)
+		die("capng_apply");
+}
+
 int main(int argc, char **argv)
 {
 	pid_t pid;
@@ -188,6 +214,9 @@ int main(int argc, char **argv)
 
 		setup_rootfs(argv[1]);
 		mount_proc();
+
+		/* Phase 5: drop capabilities right before exec */
+		drop_caps();
 
 		execv(argv[2], &argv[2]);
 		die("execv");
