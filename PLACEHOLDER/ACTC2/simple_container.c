@@ -1,5 +1,6 @@
 #define _GNU_SOURCE
 #include <errno.h>
+#include <fcntl.h>
 #include <limits.h>
 #include <sched.h>
 #include <stdio.h>
@@ -17,6 +18,28 @@ static void die(const char *msg)
 	exit(EXIT_FAILURE);
 }
 
+static void write_file(const char *path, const char *data)
+{
+	int fd;
+	ssize_t len, wr;
+
+	fd = open(path, O_WRONLY | O_CLOEXEC);
+	if (fd < 0)
+		die(path);
+
+	len = (ssize_t)strlen(data);
+	wr = write(fd, data, (size_t)len);
+	if (wr != len) {
+		if (wr < 0)
+			die("write");
+		errno = EIO;
+		die("short write");
+	}
+
+	if (close(fd) < 0)
+		die("close");
+}
+
 static int pivot_root(const char *new_root, const char *put_old)
 {
 	return syscall(SYS_pivot_root, new_root, put_old);
@@ -30,21 +53,12 @@ static void setup_rootfs(const char *rootfs_path)
 	if (!realpath(rootfs_path, new_root))
 		die("realpath(rootfs)");
 
-	/*
-	 * Prevent mount propagation back to the host.
-	 * MS_REC makes it recursive (applies to all submounts).
-	 */
 	if (mount(NULL, "/", NULL, MS_REC | MS_PRIVATE, NULL) < 0)
 		die("mount(/) MS_PRIVATE");
 
-	/*
-	 * pivot_root requires new_root to be a mount point.
-	 * Bind-mount rootfs onto itself to make it one.
-	 */
 	if (mount(new_root, new_root, NULL, MS_BIND | MS_REC, NULL) < 0)
 		die("mount(rootfs) MS_BIND");
 
-	/* Create directory for old root inside new root */
 	if (snprintf(put_old, sizeof(put_old), "%s/.old_root", new_root) >= (int)sizeof(put_old)) {
 		errno = ENAMETOOLONG;
 		die("snprintf(put_old)");
@@ -53,17 +67,12 @@ static void setup_rootfs(const char *rootfs_path)
 	if (mkdir(put_old, 0755) < 0 && errno != EEXIST)
 		die("mkdir(.old_root)");
 
-	/*
-	 * Switch root: new_root becomes "/", old root is mounted at /.old_root.
-	 */
 	if (pivot_root(new_root, put_old) < 0)
 		die("pivot_root");
 
-	/* Ensure we're operating relative to the new root */
 	if (chdir("/") < 0)
 		die("chdir(/)");
 
-	/* Detach and remove the old root so it's inaccessible */
 	if (umount2("/.old_root", MNT_DETACH) < 0)
 		die("umount2(/.old_root)");
 
@@ -73,7 +82,6 @@ static void setup_rootfs(const char *rootfs_path)
 
 static void mount_proc(void)
 {
-	/* Some rootfs may not have /proc; create it if missing. */
 	if (mkdir("/proc", 0555) < 0 && errno != EEXIST)
 		die("mkdir(/proc)");
 
@@ -81,19 +89,89 @@ static void mount_proc(void)
 		die("mount(/proc)");
 }
 
+/*
+ * Phase 4: Create a cgroup v2 and limit memory.
+ * We intentionally do not fail if enabling the memory controller is not possible
+ * (some setups already enable it or disallow writing subtree_control here).
+ */
+static void try_enable_memory_controller(void)
+{
+	const char *path = "/sys/fs/cgroup/cgroup.subtree_control";
+
+	if (access(path, F_OK) != 0)
+		return;
+
+	/* Use a small, warning-free write via write_file; ignore failure explicitly. */
+	{
+		int saved_errno;
+		int fd = open(path, O_WRONLY | O_CLOEXEC);
+		if (fd < 0)
+			return;
+
+		/* Must check return values under -Werror */
+		if (write(fd, "+memory\n", 8) < 0) {
+			/* ignore */
+		}
+		saved_errno = errno;
+		if (close(fd) < 0) {
+			/* ignore */
+		}
+		errno = saved_errno;
+	}
+}
+
+static void setup_cgroup(pid_t child_pid)
+{
+	const char *cg_root = "/sys/fs/cgroup";
+	const char *cg_name = "simple_container";
+	char cg_dir[PATH_MAX];
+	char path[PATH_MAX];
+	char pidbuf[64];
+
+	try_enable_memory_controller();
+
+	if (snprintf(cg_dir, sizeof(cg_dir), "%s/%s", cg_root, cg_name) >= (int)sizeof(cg_dir)) {
+		errno = ENAMETOOLONG;
+		die("snprintf(cg_dir)");
+	}
+
+	if (mkdir(cg_dir, 0755) < 0 && errno != EEXIST)
+		die("mkdir(cgroup)");
+
+	if (snprintf(path, sizeof(path), "%s/memory.max", cg_dir) >= (int)sizeof(path)) {
+		errno = ENAMETOOLONG;
+		die("snprintf(memory.max)");
+	}
+	write_file(path, "100000000\n");
+
+	if (snprintf(path, sizeof(path), "%s/cgroup.procs", cg_dir) >= (int)sizeof(path)) {
+		errno = ENAMETOOLONG;
+		die("snprintf(cgroup.procs)");
+	}
+
+	if (snprintf(pidbuf, sizeof(pidbuf), "%d\n", child_pid) >= (int)sizeof(pidbuf)) {
+		errno = ENAMETOOLONG;
+		die("snprintf(pidbuf)");
+	}
+	write_file(path, pidbuf);
+}
+
+static void cleanup_cgroup(void)
+{
+	if (rmdir("/sys/fs/cgroup/simple_container") < 0)
+		die("rmdir(cgroup)");
+}
+
 int main(int argc, char **argv)
 {
 	pid_t pid;
+	int status;
 
 	if (argc < 3) {
 		fprintf(stderr, "Usage: %s <rootfs_path> <command> [args...]\n", argv[0]);
 		return EXIT_FAILURE;
 	}
 
-	/*
-	 * Phase 3: PID namespaces only affect children.
-	 * Unshare in the parent before fork so the child becomes PID 1.
-	 */
 	if (unshare(CLONE_NEWPID) < 0)
 		die("unshare(CLONE_NEWPID)");
 
@@ -102,27 +180,31 @@ int main(int argc, char **argv)
 		die("fork");
 
 	if (pid == 0) {
-		/* Phase 1: basic namespace isolation */
 		if (unshare(CLONE_NEWUTS | CLONE_NEWNS | CLONE_NEWIPC) < 0)
 			die("unshare(CLONE_NEWUTS|CLONE_NEWNS|CLONE_NEWIPC)");
 
 		if (sethostname("mycontainer", strlen("mycontainer")) < 0)
 			die("sethostname");
 
-		/* Phase 2: filesystem isolation using pivot_root */
 		setup_rootfs(argv[1]);
-
-		/* Phase 3: mount a fresh /proc inside the container root */
 		mount_proc();
 
-		/* Execute command inside the new root */
 		execv(argv[2], &argv[2]);
 		die("execv");
 	}
 
-	if (waitpid(pid, NULL, 0) < 0)
+	setup_cgroup(pid);
+
+	if (waitpid(pid, &status, 0) < 0)
 		die("waitpid");
 
-	return 0;
+	cleanup_cgroup();
+
+	if (WIFEXITED(status))
+		return WEXITSTATUS(status);
+	if (WIFSIGNALED(status))
+		return 128 + WTERMSIG(status);
+
+	return EXIT_FAILURE;
 }
 
